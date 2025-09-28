@@ -4,6 +4,8 @@ import threading
 import time
 from collections import deque
 
+WINDU_VERSION = "2025-09-27.1"
+
 class ScanState:
     """A thread-safe class to hold the state of the directory scan."""
     def __init__(self):
@@ -50,8 +52,8 @@ def format_bytes(size):
     for unit in ['KB', 'MB', 'GB', 'TB']:
         size /= 1024.0
         if size < 1024.0:
-            return f"{size:6.2f} {unit}"
-    return f"{size:6.2f} PB"
+            return f"{size:.1f} {unit}"
+    return f"{size:.1f} PB"
 
 def scanner_worker(path, state):
     """Scans the filesystem, builds a tree, and calculates directory sizes."""
@@ -127,7 +129,7 @@ def draw_dialog(stdscr, state):
         box_win.addstr(4, 3, f"Files: {file_count:,}")
         box_win.addstr(5, 3, f"Size : {format_bytes(total_size)}")
         progress = (scanned_items / total_items) if total_items > 0 else 1
-        bar_width = box_w - 6
+        bar_width = box_w - 15
         filled_len = int(bar_width * progress)
         bar = '█' * filled_len + '-' * (bar_width - filled_len)
         box_win.addstr(7, 3, f"[{bar}] {progress:.1%}")
@@ -143,6 +145,82 @@ def draw_dialog(stdscr, state):
             break
         if stdscr.getch() in [ord('q'), ord('Q'), 27]:
             break
+
+def draw_delete_dialog(stdscr, item_name, item_type):
+    """Draws a delete confirmation dialog."""
+    curses.curs_set(0)
+    stdscr.nodelay(0)
+    
+    h, w = stdscr.getmaxyx()
+    
+    # Dialog box dimensions
+    box_h, box_w = 8, min(w - 4, 60)
+    box_y, box_x = (h - box_h) // 2, (w - box_w) // 2
+    
+    # Selection state (0 = Cancel, 1 = OK)
+    selection = 0
+    
+    while True:
+        stdscr.erase()
+        
+        # Draw dialog box
+        box_win = stdscr.subwin(box_h, box_w, box_y, box_x)
+        box_win.border()
+        
+        # Title
+        title = f"Delete {item_type.title()}"
+        box_win.addstr(1, (box_w - len(title)) // 2, title)
+        
+        # Warning message
+        warning = f"Are you sure you want to delete:"
+        box_win.addstr(2, (box_w - len(warning)) // 2, warning)
+        
+        # Item name (truncated if too long)
+        display_name = item_name
+        if len(display_name) > box_w - 4:
+            display_name = "..." + display_name[-(box_w - 7):]
+        box_win.addstr(3, (box_w - len(display_name)) // 2, display_name)
+        
+        # Buttons
+        cancel_text = " Cancel "
+        ok_text = " OK "
+        button_y = 5
+        
+        # Cancel button
+        cancel_attr = curses.A_REVERSE if selection == 0 else curses.A_NORMAL
+        box_win.attron(cancel_attr)
+        box_win.addstr(button_y, (box_w - 20) // 2, f"[{cancel_text}]")
+        box_win.attroff(cancel_attr)
+        
+        # OK button
+        ok_attr = curses.A_REVERSE if selection == 1 else curses.A_NORMAL
+        box_win.attron(ok_attr)
+        box_win.addstr(button_y, (box_w + 2) // 2, f"[{ok_text}]")
+        box_win.attroff(ok_attr)
+        
+        # Instructions
+        instructions = "Use Tab/Arrows to select, Enter to confirm"
+        box_win.addstr(6, (box_w - len(instructions)) // 2, instructions)
+        
+        stdscr.refresh()
+        box_win.refresh()
+        
+        key = stdscr.getch()
+        
+        if key == ord('\t') or key == 9: # Tab
+            selection = not selection
+        elif key == curses.KEY_LEFT:
+            selection = 0
+        elif key == curses.KEY_RIGHT:
+            selection = 1
+        elif key == 10 or key == 13:  # Enter
+            return selection == 1  # True if OK selected, False if Cancel
+        elif key == ord('q') or key == 27:  # Escape
+            return False
+        elif key == ord('c'):  # Quick cancel
+            return False
+        elif key == ord('o'):  # Quick OK
+            return True
 
 def draw_tree_view(stdscr, tree):
     """Draws the interactive, navigable directory tree."""
@@ -175,13 +253,17 @@ def draw_tree_view(stdscr, tree):
         
         h, w = stdscr.getmaxyx()
         stdscr.erase()
+        #stdscr.box()
 
         # --- Header ---
         header = f"--- {current_node['name']} --- Total Size: {format_bytes(current_node['size'])} ---"
         stdscr.addstr(0, 1, header[:w-2])
         sort_mode = "Desc" if sort_descending else "Asc"
-        help_text = f"Arrows: Navigate | s: Toggle Sort ({sort_mode}) | q: Quit"
-        stdscr.addstr(h - 1, 1, help_text[:w-2])
+        help_text = f" windu v{WINDU_VERSION} | Arrows: Navigate | s: Toggle Sort ({sort_mode}) | d: Delete | q: Quit "
+        attributes = curses.A_STANDOUT| curses.A_REVERSE
+        stdscr.attron(attributes)
+        stdscr.addstr(h - 1, 1, help_text.ljust(w-2))
+        stdscr.attroff(attributes)
 
         # --- Scrolling logic ---
         if current_selection < scroll_top:
@@ -243,6 +325,13 @@ def draw_tree_view(stdscr, tree):
         elif key == ord('s'):
             sort_descending = not sort_descending
             children.sort(key=lambda x: x['size'], reverse=sort_descending)
+        elif key == ord('d'):  # Delete key
+            if not children: continue
+            selected_child = children[current_selection]
+            # Show delete confirmation dialog
+            if draw_delete_dialog(stdscr, selected_child['name'], selected_child['type']):
+                # TODO: Implement actual deletion here
+                pass  # Placeholder for future deletion code
         elif key == curses.KEY_RIGHT or key == 10: # Enter
             if not children: continue
             selected_child = children[current_selection]
